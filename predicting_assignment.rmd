@@ -1,0 +1,168 @@
+---
+title: "Practical Machine Learning Project"
+author: "Sitaram Gautam"
+date: "Feb 23, 2016"
+output: html_document
+---
+
+### Background
+  This analysis corresponds to the prediction assignment for Practical Machine
+Learning course offered by John Hopkin's University through Coursera. The 
+dataset for the assignment is obtained from http://groupware.le. Based on
+the website, the data is gathered using different sensors while 6
+participants exercised in different fashions. The way they exercised are
+categorized into A, B, C, D, and E; A being the correct way of doing the
+exercise and B-E including some level of mistakes.The goal of the assignment
+is to build an algorithm that takes different fields in the dataset and
+predicts the associated exercise category correctly.
+
+
+```{r}
+suppressMessages(library(caret))
+suppressMessages(library(rpart))
+suppressMessages(library(xgboost))
+
+set.seed(977)
+
+training_original <- read.csv(
+  "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+  na.strings = c("NA","#DIV/0!"),
+  sep = ",",
+  header = TRUE
+)
+testing_original <- read.csv(
+  "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+  na.strings = c("NA","#DIV/0!"),
+  sep = ",",
+  header = TRUE
+)
+
+```
+
+#### Data cleaning and preprocessing
+
+For this analysis, I am going to use 3 data cleaning/preprocessing techniques which are described below: 
+
+1. Take only the fields related to exercises which are belt, arm, dumbbell, and forearm
+
+```{r}
+
+# Take only the fields related to exercises which are belt, arm, dumbbell, and forearm
+sensorColumns <-
+  grep(pattern = "_belt|_arm|_dumbbell|_forearm", names(training_original))
+
+```
+
+```{r}
+
+# take only the columns associated to
+training_original <- training_original[, c(sensorColumns,160)]
+```
+
+2. Remove columns with NA
+
+```{r}
+# remove columns with NA
+cols_wo_na <- colSums(is.na(training_original)) == 0
+training_original <- training_original[, cols_wo_na]
+
+```
+
+3. Check for features's variance
+
+```{r}
+## check to see if there is any fields with near zero variability.
+near_zero_vars <- nearZeroVar(training_original, saveMetrics = TRUE)
+near_zero_vars
+```
+
+Columns nzv and zeroVar indicate that none of the features left have
+near-zero/zero variance i.e no need of features to be filtered out.
+
+#### Data dividing into training and test set
+
+60 % of the original training set is taken as training set for building model
+and rest as testing set
+
+```{r}
+## Splitting the original training dataset into another training and a testing set.
+inTrain <-
+  createDataPartition(y = training_original$classe, p = 0.60, list = FALSE)
+
+
+training <- training_original[inTrain,]
+testing <- training_original[-inTrain,]
+```
+
+#### Building model
+
+```{r}
+
+model_fit_dt <- rpart(classe ~ ., data = training, method = "class")
+model_fit_dt
+predictions_dt <- predict(model_fit_dt, testing, type = "class")
+cm_dt <- confusionMatrix(predictions_dt, testing$classe)
+cm_dt
+```
+
+73.94% overall accuracy. Not the model we want :)
+
+#### xgboost
+
+I am going to try xgboost, another efficient and high performing machine
+learning algorithm.
+xgboost works only for numeric data types. So, classe variable in the datasets,
+which is in factor type, need to be converted to the numeric type.
+
+```{r}
+
+# convert factor type to numeric
+classe_factor <-  training[, "classe"]
+classe_numeric <- classe_factor
+class_count <- length(levels(classe_factor))
+levels(classe_numeric) = 1:class_count
+
+
+# Remove the classe column from both training and test data sets
+training$classe = NULL
+testing$classe = NULL
+
+
+# Change data type of training and testing to matrix
+training_matrix = as.matrix(training)
+mode(training_matrix) = "numeric"
+testing_matrix = as.matrix(testing)
+mode(testing_matrix) = "numeric"
+class_outcome <- as.matrix(as.integer(classe_numeric) - 1)
+```
+
+Apply the xboost model.
+
+```{r}
+model_fit_xgb <-
+  xgb.cv(
+    param =  list("objective" = "multi:softprob","num_class" = class_count),
+    data = training_matrix,
+    label = class_outcome,
+    nfold = 4,
+    nrounds = 100,
+    prediction = TRUE,
+    verbose = FALSE
+  )
+predictions_xgb <-
+  matrix(
+    model_fit_xgb$pred, nrow = length(model_fit_xgb$pred) / class_count, ncol =
+      class_count
+  )
+predictions_xgb <- max.col(predictions_xgb, "last")
+confusionMatrix(factor(class_outcome + 1), factor(predictions_xgb))
+
+```
+
+Overall accuracy is 99%+ which means error rate is less than 1%.
+
+xgboost definitely killed it compared to classification tree! Based on CRAN
+documentation, xgboost package uses parallel computing on a single machine. It
+also uses efficient linear model solver.
+
+
